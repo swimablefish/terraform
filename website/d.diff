@@ -1,0 +1,161 @@
+diff --git a/website/source/intro/getting-started/build.html.md b/website/source/intro/getting-started/build.html.md
+index 0c380d4..633db88 100644
+--- a/website/source/intro/getting-started/build.html.md
++++ b/website/source/intro/getting-started/build.html.md
+@@ -59,7 +59,7 @@ provider "aws" {
+ }
+ 
+ resource "aws_instance" "example" {
+-	ami = "ami-5189a661"
++	ami = "ami-d05e75b8"
+ 	instance_type = "t2.micro"
+ }
+ ```
+@@ -111,7 +111,7 @@ $ terraform plan
+ ...
+ 
+ + aws_instance.example
+-    ami:               "" => "ami-5189a661"
++    ami:               "" => "ami-d05e75b8"
+     availability_zone: "" => "<computed>"
+     instance_type:     "" => "t2.micro"
+     key_name:          "" => "<computed>"
+@@ -148,7 +148,7 @@ since Terraform waits for the EC2 instance to become available.
+ ```
+ $ terraform apply
+ aws_instance.example: Creating...
+-  ami:           "" => "ami-5189a661"
++  ami:           "" => "ami-d05e75b8"
+   instance_type: "" => "t2.micro"
+ 
+ Apply complete! Resources: 1 added, 0 changed, 0 destroyed.
+@@ -172,7 +172,7 @@ You can inspect the state using `terraform show`:
+ $ terraform show
+ aws_instance.example:
+   id = i-e60900cd
+-  ami = ami-5189a661
++  ami = ami-d05e75b8
+   availability_zone = us-east-1c
+   instance_type = t2.micro
+   key_name =
+diff --git a/website/source/intro/getting-started/change.html.md b/website/source/intro/getting-started/change.html.md
+index 4850bc8..60d14fd 100644
+--- a/website/source/intro/getting-started/change.html.md
++++ b/website/source/intro/getting-started/change.html.md
+@@ -28,8 +28,8 @@ resource in your configuration and change it to the following:
+ 
+ ```
+ resource "aws_instance" "example" {
+-	ami = "ami-aa7ab6c2"
+-	instance_type = "t1.micro"
++	ami = "ami-8eb061e6"
++	instance_type = "t2.micro"
+ }
+ ```
+ 
+@@ -47,7 +47,7 @@ $ terraform plan
+ ...
+ 
+ -/+ aws_instance.example
+-    ami:               "ami-408c7f28" => "ami-aa7ab6c2" (forces new resource)
++    ami:               "ami-d05e75b8" => "ami-8eb061e6" (forces new resource)
+     availability_zone: "us-east-1c" => "<computed>"
+     key_name:          "" => "<computed>"
+     private_dns:       "domU-12-31-39-12-38-AB.compute-1.internal" => "<computed>"
+@@ -79,7 +79,7 @@ the change.
+ $ terraform apply
+ aws_instance.example: Destroying...
+ aws_instance.example: Modifying...
+-  ami: "ami-408c7f28" => "ami-aa7ab6c2"
++  ami: "ami-d05e75b8" => "ami-8eb061e6"
+ 
+ Apply complete! Resources: 0 added, 1 changed, 1 destroyed.
+ 
+diff --git a/website/source/intro/getting-started/dependencies.html.md b/website/source/intro/getting-started/dependencies.html.md
+index fe3397a..75cc9e4 100644
+--- a/website/source/intro/getting-started/dependencies.html.md
++++ b/website/source/intro/getting-started/dependencies.html.md
+@@ -67,9 +67,9 @@ $ terraform plan
+     public_ip:  "" => "<computed>"
+ 
+ + aws_instance.example
+-    ami:               "" => "ami-aa7ab6c2"
++    ami:               "" => "ami-8eb061e6"
+     availability_zone: "" => "<computed>"
+-    instance_type:     "" => "t1.micro"
++    instance_type:     "" => "t2.micro"
+     key_name:          "" => "<computed>"
+     private_dns:       "" => "<computed>"
+     private_ip:        "" => "<computed>"
+@@ -90,8 +90,8 @@ following:
+ 
+ ```
+ aws_instance.example: Creating...
+-  ami:           "" => "ami-aa7ab6c2"
+-  instance_type: "" => "t1.micro"
++  ami:           "" => "ami-8eb061e6"
++  instance_type: "" => "t2.micro"
+ aws_eip.ip: Creating...
+   instance: "" => "i-0e737b25"
+ 
+@@ -144,8 +144,8 @@ created in parallel to everything else.
+ 
+ ```
+ resource "aws_instance" "another" {
+-	ami = "ami-aa7ab6c2"
+-	instance_type = "t1.micro"
++	ami = "ami-8eb061e6"
++	instance_type = "t2.micro"
+ }
+ ```
+ 
+diff --git a/website/source/intro/getting-started/provision.html.md b/website/source/intro/getting-started/provision.html.md
+index 4c6a5cf..24684ef 100644
+--- a/website/source/intro/getting-started/provision.html.md
++++ b/website/source/intro/getting-started/provision.html.md
+@@ -25,8 +25,8 @@ To define a provisioner, modify the resource block defining the
+ 
+ ```
+ resource "aws_instance" "example" {
+-	ami = "ami-aa7ab6c2"
+-	instance_type = "t1.micro"
++	ami = "ami-8eb061e6"
++	instance_type = "t2.micro"
+ 
+ 	provisioner "local-exec" {
+ 		command = "echo ${aws_instance.example.public_ip} > file.txt"
+@@ -61,8 +61,8 @@ then run `apply`:
+ ```
+ $ terraform apply
+ aws_instance.example: Creating...
+-  ami:           "" => "ami-aa7ab6c2"
+-  instance_type: "" => "t1.micro"
++  ami:           "" => "ami-8eb061e6"
++  instance_type: "" => "t2.micro"
+ aws_eip.ip: Creating...
+   instance: "" => "i-213f350a"
+ 
+diff --git a/website/source/intro/getting-started/variables.html.md b/website/source/intro/getting-started/variables.html.md
+index 24154ca..9062a08 100644
+--- a/website/source/intro/getting-started/variables.html.md
++++ b/website/source/intro/getting-started/variables.html.md
+@@ -123,8 +123,8 @@ support for the "us-west-2" region as well:
+ ```
+ variable "amis" {
+ 	default = {
+-		us-east-1 = "ami-aa7ab6c2"
+-		us-west-2 = "ami-23f78e13"
++		us-east-1 = "ami-8eb061e6"
++		us-west-2 = "ami-ef5e24df"
+ 	}
+ }
+ ```
+@@ -137,7 +137,7 @@ Then, replace the "aws\_instance" with the following:
+ ```
+ resource "aws_instance" "example" {
+ 	ami = "${lookup(var.amis, var.region)}"
+-	instance_type = "t1.micro"
++	instance_type = "t2.micro"
+ }
+ ```
+ 
