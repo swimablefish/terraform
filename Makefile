@@ -24,7 +24,7 @@ core-dev: fmtcheck generate
 # Shorthand for building and installing just one plugin for local testing.
 # Run as (for example): make plugin-dev PLUGIN=provider-aws
 plugin-dev: fmtcheck generate
-	go install github.com/hashicorp/terraform/builtin/bins/$(PLUGIN)
+	go install github.com/swimablefish/terraform/builtin/bins/$(PLUGIN)
 	mv $(GOPATH)/bin/$(PLUGIN) $(GOPATH)/bin/terraform-$(PLUGIN)
 
 # test runs the unit tests and vets the code

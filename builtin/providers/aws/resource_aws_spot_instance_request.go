@@ -189,6 +189,11 @@ func resourceAwsSpotInstanceRequestRead(d *schema.ResourceData, meta interface{}
 	// Instance ID is not set if the request is still pending
 	if request.InstanceId != nil {
 		d.Set("spot_instance_id", *request.InstanceId)
+		//set tags to spot instance
+		if tagErr := setSpotInstanceTags(conn, d); tagErr != nil {
+			log.Printf("[DEBUG] add spot instace tags")
+			return fmt.Errorf("[ERR] Error add Spot Instance tags")
+		}
 		// Read the instance data, setting up connection information
 		if err := readInstance(d, meta); err != nil {
 			return fmt.Errorf("[ERR] Error reading Spot Instance Data: %s", err)
@@ -198,6 +203,39 @@ func resourceAwsSpotInstanceRequestRead(d *schema.ResourceData, meta interface{}
 	d.Set("spot_request_state", request.State)
 	d.Set("block_duration_minutes", request.BlockDurationMinutes)
 	d.Set("tags", tagsToMap(request.Tags))
+
+	return nil
+}
+
+func setSpotInstanceTags(conn *ec2.EC2, d *schema.ResourceData) error {
+	if d.HasChange("tags") {
+		oraw, nraw := d.GetChange("tags")
+		o := oraw.(map[string]interface{})
+		n := nraw.(map[string]interface{})
+		create, remove := diffTags(tagsFromMap(o), tagsFromMap(n))
+
+		// Set tags
+		if len(remove) > 0 {
+			log.Printf("[DEBUG] Removing tags: %#v from %s", remove, d.Id())
+			_, err := conn.DeleteTags(&ec2.DeleteTagsInput{
+				Resources: []*string{aws.String(d.Get("spot_instance_id").(string))},
+				Tags:      remove,
+			})
+			if err != nil {
+				return err
+			}
+		}
+		if len(create) > 0 {
+			log.Printf("[DEBUG] Creating tags: %s for %s", create, d.Id())
+			_, err := conn.CreateTags(&ec2.CreateTagsInput{
+				Resources: []*string{aws.String(d.Get("spot_instance_id").(string))},
+				Tags:      create,
+			})
+			if err != nil {
+				return err
+			}
+		}
+	}
 
 	return nil
 }
