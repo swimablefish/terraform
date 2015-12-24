@@ -1,8 +1,8 @@
 package main
 
 import (
-	"github.com/swimablefish/terraform/builtin/providers/aws"
 	"github.com/hashicorp/terraform/plugin"
+	"github.com/swimablefish/terraform/builtin/providers/aws"
 )
 
 func main() {
