@@ -160,12 +160,12 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 				},
 			},
 			"stream_enabled": &schema.Schema{
-				Type: schema.TypeBool,
+				Type:     schema.TypeBool,
 				Optional: true,
 				Computed: true,
 			},
 			"stream_view_type": &schema.Schema{
-				Type: schema.TypeString,
+				Type:     schema.TypeString,
 				Optional: true,
 				Computed: true,
 				StateFunc: func(v interface{}) string {
@@ -280,9 +280,9 @@ func resourceAwsDynamoDbTableCreate(d *schema.ResourceData, meta interface{}) er
 	}
 
 	if _, ok := d.GetOk("stream_enabled"); ok {
-		
+
 		req.StreamSpecification = &dynamodb.StreamSpecification{
-			StreamEnabled: aws.Bool(d.Get("stream_enabled").(bool)),
+			StreamEnabled:  aws.Bool(d.Get("stream_enabled").(bool)),
 			StreamViewType: aws.String(d.Get("stream_view_type").(string)),
 		}
 
@@ -346,33 +346,13 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 		return fmt.Errorf("Range key can only be specified at creation, you cannot modify it.")
 	}
 
-	if d.HasChange("read_capacity") || d.HasChange("write_capacity") {
-		req := &dynamodb.UpdateTableInput{
-			TableName: aws.String(d.Id()),
-		}
-
-		throughput := &dynamodb.ProvisionedThroughput{
-			ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
-			WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
-		}
-		req.ProvisionedThroughput = throughput
-
-		_, err := dynamodbconn.UpdateTable(req)
-
-		if err != nil {
-			return err
-		}
-
-		waitForTableToBeActive(d.Id(), meta)
-	}
-
 	if d.HasChange("stream_enabled") || d.HasChange("stream_view_type") {
 		req := &dynamodb.UpdateTableInput{
 			TableName: aws.String(d.Id()),
 		}
 
 		req.StreamSpecification = &dynamodb.StreamSpecification{
-			StreamEnabled: aws.Bool(d.Get("stream_enabled").(bool)),
+			StreamEnabled:  aws.Bool(d.Get("stream_enabled").(bool)),
 			StreamViewType: aws.String(d.Get("stream_view_type").(string)),
 		}
 
@@ -385,6 +365,7 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 		waitForTableToBeActive(d.Id(), meta)
 	}
 
+	gsiThroughputUpdates := []*dynamodb.GlobalSecondaryIndexUpdate{}
 	if d.HasChange("global_secondary_index") {
 		log.Printf("[DEBUG] Changed GSI data")
 		req := &dynamodb.UpdateTableInput{
@@ -512,8 +493,6 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 
 			table := tableDescription.Table
 
-			updates := []*dynamodb.GlobalSecondaryIndexUpdate{}
-
 			for _, updatedgsidata := range gsiSet.List() {
 				gsidata := updatedgsidata.(map[string]interface{})
 				gsiName := gsidata["name"].(string)
@@ -544,29 +523,41 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 							},
 						},
 					}
-					updates = append(updates, update)
-
-				}
-
-				if len(updates) > 0 {
-
-					req := &dynamodb.UpdateTableInput{
-						TableName: aws.String(d.Id()),
-					}
-
-					req.GlobalSecondaryIndexUpdates = updates
-
-					log.Printf("[DEBUG] Updating GSI read / write capacity on %s", d.Id())
-					_, err := dynamodbconn.UpdateTable(req)
-
-					if err != nil {
-						log.Printf("[DEBUG] Error updating table: %s", err)
-						return err
-					}
+					gsiThroughputUpdates = append(gsiThroughputUpdates, update)
 				}
 			}
 		}
+	}
 
+	// combine table and gsi throughput provision into one api call,
+	// which may help to not hitting the 4 times a day limit on decreasing provisioned throughput
+	// http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Limits.html#d0e52841
+	tableCapacityUpdated := d.HasChange("read_capacity") || d.HasChange("write_capacity")
+	gsiCapacityUpdated := len(gsiThroughputUpdates) > 0
+	if tableCapacityUpdated || gsiCapacityUpdated {
+		req := &dynamodb.UpdateTableInput{
+			TableName: aws.String(d.Id()),
+		}
+
+		if tableCapacityUpdated {
+			throughput := &dynamodb.ProvisionedThroughput{
+				ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
+				WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
+			}
+			req.ProvisionedThroughput = throughput
+		}
+
+		if gsiCapacityUpdated {
+			req.GlobalSecondaryIndexUpdates = gsiThroughputUpdates
+		}
+
+		_, err := dynamodbconn.UpdateTable(req)
+
+		if err != nil {
+			return err
+		}
+
+		waitForTableToBeActive(d.Id(), meta)
 	}
 
 	return resourceAwsDynamoDbTableRead(d, meta)
@@ -804,10 +795,10 @@ func waitForTableToBeActive(tableName string, meta interface{}) error {
 
 func validateStreamViewType(v interface{}, k string) (ws []string, errors []error) {
 	value := v.(string)
-	viewTypes := map[string]bool {
-		"KEYS_ONLY": true,
-		"NEW_IMAGE": true,
-		"OLD_IMAGE": true,
+	viewTypes := map[string]bool{
+		"KEYS_ONLY":          true,
+		"NEW_IMAGE":          true,
+		"OLD_IMAGE":          true,
 		"NEW_AND_OLD_IMAGES": true,
 	}
 
