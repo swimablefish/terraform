@@ -202,7 +202,12 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 
 	d.SetId(*resp.SpotFleetRequestId)
 
-	return resourceAwsSpotFleetRequestUpdate(d, meta)
+	// TODO: wait_for_fulfillment
+	if d.Get("wait_for_fulfillment").(bool) {
+
+	}
+
+	return resourceAwsSpotFleetRequestRead(d, meta)
 }
 
 // Update spot state, etc
@@ -302,26 +307,16 @@ func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) e
 func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
-	d.Partial(true)
-
 	if d.HasChange("target_capacity") {
-		resp, err := conn.ModifySpotFleetRequest(&ec2.ModifySpotFleetRequestInput{
-			SpotFleetRequestId: aws.String(d.Id()),
-			TargetCapacity:     aws.Int64(int64(d.Get("target_capacity").(int))),
-		})
-		if err != nil {
-			return err
-		}
-		if !*resp.Return {
-			return fmt.Errorf("Error modifying spot fleet (%s).", d.Id())
-		}
-	}
-
-	if d.HasChange("excess_capacity_termination_policy") {
-		resp, err := conn.ModifySpotFleetRequest(&ec2.ModifySpotFleetRequestInput{
+		input := &ec2.ModifySpotFleetRequestInput{
 			SpotFleetRequestId:              aws.String(d.Id()),
-			ExcessCapacityTerminationPolicy: aws.String(d.Get("excess_capacity_termination_policy").(string)),
-		})
+			TargetCapacity:                  aws.Int64(int64(d.Get("target_capacity").(int))),
+		}
+		if v, ok := d.GetOk("excess_capacity_termination_policy"); ok {
+			input.ExcessCapacityTerminationPolicy = aws.String(v.(string))
+		}
+
+		resp, err := conn.ModifySpotFleetRequest(input)
 		if err != nil {
 			return err
 		}
@@ -329,8 +324,6 @@ func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{})
 			return fmt.Errorf("Error modifying spot fleet (%s).", d.Id())
 		}
 	}
-
-	d.Partial(false)
 
 	return resourceAwsSpotFleetRequestRead(d, meta)
 }
@@ -408,33 +401,3 @@ func buildAwsSpotFleetLaunchSpecifications(
 	return specs, nil
 }
 
-//// SpotInstanceStateRefreshFunc returns a resource.StateRefreshFunc that is used to watch
-//// an EC2 spot instance request
-//func SpotInstanceStateRefreshFunc(
-//conn *ec2.EC2, sir ec2.SpotInstanceRequest) resource.StateRefreshFunc {
-//
-//	return func() (interface{}, string, error) {
-//		resp, err := conn.DescribeSpotInstanceRequests(&ec2.DescribeSpotInstanceRequestsInput{
-//			SpotInstanceRequestIds: []*string{sir.SpotInstanceRequestId},
-//		})
-//
-//		if err != nil {
-//			if ec2err, ok := err.(awserr.Error); ok && ec2err.Code() == "InvalidSpotInstanceRequestID.NotFound" {
-//				// Set this to nil as if we didn't find anything.
-//				resp = nil
-//			} else {
-//				log.Printf("Error on StateRefresh: %s", err)
-//				return nil, "", err
-//			}
-//		}
-//
-//		if resp == nil || len(resp.SpotInstanceRequests) == 0 {
-//			// Sometimes AWS just has consistency issues and doesn't see
-//			// our request yet. Return an empty state.
-//			return nil, "", nil
-//		}
-//
-//		req := resp.SpotInstanceRequests[0]
-//		return req, *req.Status.Code, nil
-//	}
-//}
