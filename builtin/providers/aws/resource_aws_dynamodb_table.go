@@ -174,6 +174,14 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 				},
 				ValidateFunc: validateStreamViewType,
 			},
+
+			// if you have setup a 3rdparty dynamodb auto-scale tool like dynamic-dynamodb(https://github.com/sebdah/dynamic-dynamodb),
+			// you may want to set auto_scale_enabled to true, which will make terraform NOT to update the throughput capacity
+			"auto_scale_enabled": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+			},
 		},
 	}
 }
@@ -365,7 +373,6 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 		waitForTableToBeActive(d.Id(), meta)
 	}
 
-	gsiThroughputUpdates := []*dynamodb.GlobalSecondaryIndexUpdate{}
 	if d.HasChange("global_secondary_index") {
 		log.Printf("[DEBUG] Changed GSI data")
 		req := &dynamodb.UpdateTableInput{
@@ -477,87 +484,90 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 	}
 
 	// Update any out-of-date read / write capacity
-	if gsiObjects, ok := d.GetOk("global_secondary_index"); ok {
-		gsiSet := gsiObjects.(*schema.Set)
-		if len(gsiSet.List()) > 0 {
-			log.Printf("Updating capacity as needed!")
+	if !d.Get("auto_scale_enabled").(bool) {
+		gsiThroughputUpdates := []*dynamodb.GlobalSecondaryIndexUpdate{}
+		if gsiObjects, ok := d.GetOk("global_secondary_index"); ok {
+			gsiSet := gsiObjects.(*schema.Set)
+			if len(gsiSet.List()) > 0 {
+				log.Printf("Updating capacity as needed!")
 
-			// We can only change throughput, but we need to make sure it's actually changed
-			tableDescription, err := dynamodbconn.DescribeTable(&dynamodb.DescribeTableInput{
-				TableName: aws.String(d.Id()),
-			})
-
-			if err != nil {
-				return err
-			}
-
-			table := tableDescription.Table
-
-			for _, updatedgsidata := range gsiSet.List() {
-				gsidata := updatedgsidata.(map[string]interface{})
-				gsiName := gsidata["name"].(string)
-				gsiWriteCapacity := gsidata["write_capacity"].(int)
-				gsiReadCapacity := gsidata["read_capacity"].(int)
-
-				log.Printf("[DEBUG] Updating GSI %s", gsiName)
-				gsi, err := getGlobalSecondaryIndex(gsiName, table.GlobalSecondaryIndexes)
+				// We can only change throughput, but we need to make sure it's actually changed
+				tableDescription, err := dynamodbconn.DescribeTable(&dynamodb.DescribeTableInput{
+					TableName: aws.String(d.Id()),
+				})
 
 				if err != nil {
 					return err
 				}
 
-				capacityUpdated := false
+				table := tableDescription.Table
 
-				if int64(gsiReadCapacity) != *gsi.ProvisionedThroughput.ReadCapacityUnits ||
-					int64(gsiWriteCapacity) != *gsi.ProvisionedThroughput.WriteCapacityUnits {
-					capacityUpdated = true
-				}
+				for _, updatedgsidata := range gsiSet.List() {
+					gsidata := updatedgsidata.(map[string]interface{})
+					gsiName := gsidata["name"].(string)
+					gsiWriteCapacity := gsidata["write_capacity"].(int)
+					gsiReadCapacity := gsidata["read_capacity"].(int)
 
-				if capacityUpdated {
-					update := &dynamodb.GlobalSecondaryIndexUpdate{
-						Update: &dynamodb.UpdateGlobalSecondaryIndexAction{
-							IndexName: aws.String(gsidata["name"].(string)),
-							ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
-								WriteCapacityUnits: aws.Int64(int64(gsiWriteCapacity)),
-								ReadCapacityUnits:  aws.Int64(int64(gsiReadCapacity)),
-							},
-						},
+					log.Printf("[DEBUG] Updating GSI %s", gsiName)
+					gsi, err := getGlobalSecondaryIndex(gsiName, table.GlobalSecondaryIndexes)
+
+					if err != nil {
+						return err
 					}
-					gsiThroughputUpdates = append(gsiThroughputUpdates, update)
+
+					capacityUpdated := false
+
+					if int64(gsiReadCapacity) != *gsi.ProvisionedThroughput.ReadCapacityUnits ||
+					int64(gsiWriteCapacity) != *gsi.ProvisionedThroughput.WriteCapacityUnits {
+						capacityUpdated = true
+					}
+
+					if capacityUpdated {
+						update := &dynamodb.GlobalSecondaryIndexUpdate{
+							Update: &dynamodb.UpdateGlobalSecondaryIndexAction{
+								IndexName: aws.String(gsidata["name"].(string)),
+								ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
+									WriteCapacityUnits: aws.Int64(int64(gsiWriteCapacity)),
+									ReadCapacityUnits:  aws.Int64(int64(gsiReadCapacity)),
+								},
+							},
+						}
+						gsiThroughputUpdates = append(gsiThroughputUpdates, update)
+					}
 				}
 			}
 		}
-	}
 
-	// combine table and gsi throughput provision into one api call,
-	// which may help to not hitting the 4 times a day limit on decreasing provisioned throughput
-	// http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Limits.html#d0e52841
-	tableCapacityUpdated := d.HasChange("read_capacity") || d.HasChange("write_capacity")
-	gsiCapacityUpdated := len(gsiThroughputUpdates) > 0
-	if tableCapacityUpdated || gsiCapacityUpdated {
-		req := &dynamodb.UpdateTableInput{
-			TableName: aws.String(d.Id()),
-		}
-
-		if tableCapacityUpdated {
-			throughput := &dynamodb.ProvisionedThroughput{
-				ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
-				WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
+		// combine table and gsi throughput provision into one api call,
+		// which may help to not hitting the 4 times a day limit on decreasing provisioned throughput
+		// http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Limits.html#d0e52841
+		tableCapacityUpdated := d.HasChange("read_capacity") || d.HasChange("write_capacity")
+		gsiCapacityUpdated := len(gsiThroughputUpdates) > 0
+		if tableCapacityUpdated || gsiCapacityUpdated {
+			req := &dynamodb.UpdateTableInput{
+				TableName: aws.String(d.Id()),
 			}
-			req.ProvisionedThroughput = throughput
+
+			if tableCapacityUpdated {
+				throughput := &dynamodb.ProvisionedThroughput{
+					ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
+					WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
+				}
+				req.ProvisionedThroughput = throughput
+			}
+
+			if gsiCapacityUpdated {
+				req.GlobalSecondaryIndexUpdates = gsiThroughputUpdates
+			}
+
+			_, err := dynamodbconn.UpdateTable(req)
+
+			if err != nil {
+				return err
+			}
+
+			waitForTableToBeActive(d.Id(), meta)
 		}
-
-		if gsiCapacityUpdated {
-			req.GlobalSecondaryIndexUpdates = gsiThroughputUpdates
-		}
-
-		_, err := dynamodbconn.UpdateTable(req)
-
-		if err != nil {
-			return err
-		}
-
-		waitForTableToBeActive(d.Id(), meta)
 	}
 
 	return resourceAwsDynamoDbTableRead(d, meta)
