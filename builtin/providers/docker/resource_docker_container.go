@@ -4,9 +4,10 @@ import (
 	"bytes"
 	"fmt"
 
+	"regexp"
+
 	"github.com/hashicorp/terraform/helper/hashcode"
 	"github.com/hashicorp/terraform/helper/schema"
-	"regexp"
 )
 
 func resourceDockerContainer() *schema.Resource {
@@ -234,6 +235,12 @@ func resourceDockerContainer() *schema.Resource {
 
 			"log_opts": &schema.Schema{
 				Type:     schema.TypeMap,
+				Optional: true,
+				ForceNew: true,
+			},
+
+			"network_mode": &schema.Schema{
+				Type:     schema.TypeString,
 				Optional: true,
 				ForceNew: true,
 			},

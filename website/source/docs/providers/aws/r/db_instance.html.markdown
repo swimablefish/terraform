@@ -8,7 +8,21 @@ description: |-
 
 # aws\_db\_instance
 
-Provides an RDS instance resource.
+Provides an RDS instance resource.  A DB instance is an isolated database 
+environment in the cloud.  A DB instance can contain multiple user-created 
+databases. 
+
+Changes to a DB instance can occur when you manually change a
+parameter, such as `allocated_storage`, and are reflected in the next maintenance
+window. Because of this, Terraform may report a difference in it's planning
+phase because a modification has not yet taken place. You can use the
+`apply_immediately` flag to instruct the service to apply the change immediately 
+(see documentation below). 
+
+~> **Note:** using `apply_immediately` can result in a 
+brief downtime as the server reboots. See the AWS Docs on [RDS Maintenance][2] 
+for more information.
+
 
 ## Example Usage
 
@@ -84,7 +98,7 @@ database, and to use this value as the source database. This correlates to the
 * `snapshot_identifier` - (Optional) Specifies whether or not to create this database from a snapshot. This correlates to the snapshot ID you'd find in the RDS console, e.g: rds:production-2015-06-26-06-05.
 * `license_model` - (Optional, but required for some DB engines, i.e. Oracle SE1) License model information for this DB instance.
 * `auto_minor_version_upgrade` - (Optional) Indicates that minor engine upgrades will be applied automatically to the DB instance during the maintenance window. Defaults to true.
-* `auto_major_version_upgrade` - (Optional) Indicates that major version upgrades are allowed. Changing this parameter does not result in an outage and the change is asynchronously applied as soon as possible.
+* `allow_major_version_upgrade` - (Optional) Indicates that major version upgrades are allowed. Changing this parameter does not result in an outage and the change is asynchronously applied as soon as possible.
 
 ~> **NOTE:** Removing the `replicate_source_db` attribute from an existing RDS
 Replicate database managed by Terraform will promote the database to a fully
@@ -114,3 +128,4 @@ The following attributes are exported:
 * `storage_encrypted` - Specifies whether the DB instance is encrypted
 
 [1]: http://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/Overview.Replication.html
+[2]: http://docs.aws.amazon.com/fr_fr/AmazonRDS/latest/UserGuide/USER_UpgradeDBInstance.Maintenance.html
