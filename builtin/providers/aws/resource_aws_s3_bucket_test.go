@@ -114,7 +114,7 @@ func TestAccAWSS3Bucket_Website_Simple(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSS3BucketExists("aws_s3_bucket.bucket"),
 					testAccCheckAWSS3BucketWebsite(
-						"aws_s3_bucket.bucket", "index.html", "", ""),
+						"aws_s3_bucket.bucket", "index.html", "", "", ""),
 					resource.TestCheckResourceAttr(
 						"aws_s3_bucket.bucket", "website_endpoint", testAccWebsiteEndpoint),
 				),
@@ -124,7 +124,7 @@ func TestAccAWSS3Bucket_Website_Simple(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSS3BucketExists("aws_s3_bucket.bucket"),
 					testAccCheckAWSS3BucketWebsite(
-						"aws_s3_bucket.bucket", "index.html", "error.html", ""),
+						"aws_s3_bucket.bucket", "index.html", "error.html", "", ""),
 					resource.TestCheckResourceAttr(
 						"aws_s3_bucket.bucket", "website_endpoint", testAccWebsiteEndpoint),
 				),
@@ -134,7 +134,7 @@ func TestAccAWSS3Bucket_Website_Simple(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSS3BucketExists("aws_s3_bucket.bucket"),
 					testAccCheckAWSS3BucketWebsite(
-						"aws_s3_bucket.bucket", "", "", ""),
+						"aws_s3_bucket.bucket", "", "", "", ""),
 					resource.TestCheckResourceAttr(
 						"aws_s3_bucket.bucket", "website_endpoint", ""),
 				),
@@ -154,7 +154,17 @@ func TestAccAWSS3Bucket_WebsiteRedirect(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSS3BucketExists("aws_s3_bucket.bucket"),
 					testAccCheckAWSS3BucketWebsite(
-						"aws_s3_bucket.bucket", "", "", "hashicorp.com"),
+						"aws_s3_bucket.bucket", "", "", "", "hashicorp.com"),
+					resource.TestCheckResourceAttr(
+						"aws_s3_bucket.bucket", "website_endpoint", testAccWebsiteEndpoint),
+				),
+			},
+			resource.TestStep{
+				Config: testAccAWSS3BucketWebsiteConfigWithHttpsRedirect,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSS3BucketExists("aws_s3_bucket.bucket"),
+					testAccCheckAWSS3BucketWebsite(
+						"aws_s3_bucket.bucket", "", "", "https", "hashicorp.com"),
 					resource.TestCheckResourceAttr(
 						"aws_s3_bucket.bucket", "website_endpoint", testAccWebsiteEndpoint),
 				),
@@ -164,7 +174,7 @@ func TestAccAWSS3Bucket_WebsiteRedirect(t *testing.T) {
 				Check: resource.ComposeTestCheckFunc(
 					testAccCheckAWSS3BucketExists("aws_s3_bucket.bucket"),
 					testAccCheckAWSS3BucketWebsite(
-						"aws_s3_bucket.bucket", "", "", ""),
+						"aws_s3_bucket.bucket", "", "", "", ""),
 					resource.TestCheckResourceAttr(
 						"aws_s3_bucket.bucket", "website_endpoint", ""),
 				),
@@ -250,6 +260,24 @@ func TestAccAWSS3Bucket_Cors(t *testing.T) {
 							},
 						},
 					),
+				),
+			},
+		},
+	})
+}
+
+func TestAccAWSS3Bucket_Logging(t *testing.T) {
+	resource.Test(t, resource.TestCase{
+		PreCheck:     func() { testAccPreCheck(t) },
+		Providers:    testAccProviders,
+		CheckDestroy: testAccCheckAWSS3BucketDestroy,
+		Steps: []resource.TestStep{
+			resource.TestStep{
+				Config: testAccAWSS3BucketConfigWithLogging,
+				Check: resource.ComposeTestCheckFunc(
+					testAccCheckAWSS3BucketExists("aws_s3_bucket.bucket"),
+					testAccCheckAWSS3BucketLogging(
+						"aws_s3_bucket.bucket", "aws_s3_bucket.log_bucket", "log/"),
 				),
 			},
 		},
@@ -362,7 +390,7 @@ func testAccCheckAWSS3BucketPolicy(n string, policy string) resource.TestCheckFu
 		return nil
 	}
 }
-func testAccCheckAWSS3BucketWebsite(n string, indexDoc string, errorDoc string, redirectTo string) resource.TestCheckFunc {
+func testAccCheckAWSS3BucketWebsite(n string, indexDoc string, errorDoc string, redirectProtocol string, redirectTo string) resource.TestCheckFunc {
 	return func(s *terraform.State) error {
 		rs, _ := s.RootModule().Resources[n]
 		conn := testAccProvider.Meta().(*AWSClient).s3conn
@@ -408,6 +436,9 @@ func testAccCheckAWSS3BucketWebsite(n string, indexDoc string, errorDoc string, 
 		} else {
 			if *v.HostName != redirectTo {
 				return fmt.Errorf("bad redirect to, expected: %s, got %#v", redirectTo, out.RedirectAllRequestsTo)
+			}
+			if redirectProtocol != "" && *v.Protocol != redirectProtocol {
+				return fmt.Errorf("bad redirect protocol to, expected: %s, got %#v", redirectProtocol, out.RedirectAllRequestsTo)
 			}
 		}
 
@@ -462,6 +493,45 @@ func testAccCheckAWSS3BucketCors(n string, corsRules []*s3.CORSRule) resource.Te
 	}
 }
 
+func testAccCheckAWSS3BucketLogging(n, b, p string) resource.TestCheckFunc {
+	return func(s *terraform.State) error {
+		rs, _ := s.RootModule().Resources[n]
+		conn := testAccProvider.Meta().(*AWSClient).s3conn
+
+		out, err := conn.GetBucketLogging(&s3.GetBucketLoggingInput{
+			Bucket: aws.String(rs.Primary.ID),
+		})
+
+		if err != nil {
+			return fmt.Errorf("GetBucketLogging error: %v", err)
+		}
+
+		tb, _ := s.RootModule().Resources[b]
+
+		if v := out.LoggingEnabled.TargetBucket; v == nil {
+			if tb.Primary.ID != "" {
+				return fmt.Errorf("bad target bucket, found nil, expected: %s", tb.Primary.ID)
+			}
+		} else {
+			if *v != tb.Primary.ID {
+				return fmt.Errorf("bad target bucket, expected: %s, got %s", tb.Primary.ID, *v)
+			}
+		}
+
+		if v := out.LoggingEnabled.TargetPrefix; v == nil {
+			if p != "" {
+				return fmt.Errorf("bad target prefix, found nil, expected: %s", p)
+			}
+		} else {
+			if *v != p {
+				return fmt.Errorf("bad target prefix, expected: %s, got %s", p, *v)
+			}
+		}
+
+		return nil
+	}
+}
+
 // These need a bit of randomness as the name can only be used once globally
 // within AWS
 var randInt = rand.New(rand.NewSource(time.Now().UnixNano())).Int()
@@ -505,6 +575,17 @@ resource "aws_s3_bucket" "bucket" {
 
 	website {
 		redirect_all_requests_to = "hashicorp.com"
+	}
+}
+`, randInt)
+
+var testAccAWSS3BucketWebsiteConfigWithHttpsRedirect = fmt.Sprintf(`
+resource "aws_s3_bucket" "bucket" {
+	bucket = "tf-test-bucket-%d"
+	acl = "public-read"
+
+	website {
+		redirect_all_requests_to = "https://hashicorp.com"
 	}
 }
 `, randInt)
@@ -571,3 +652,18 @@ resource "aws_s3_bucket" "bucket" {
 	acl = "private"
 }
 `
+
+var testAccAWSS3BucketConfigWithLogging = fmt.Sprintf(`
+resource "aws_s3_bucket" "log_bucket" {
+	bucket = "tf-test-log-bucket-%d"
+	acl = "log-delivery-write"
+}
+resource "aws_s3_bucket" "bucket" {
+	bucket = "tf-test-bucket-%d"
+	acl = "private"
+	logging {
+		target_bucket = "${aws_s3_bucket.log_bucket.id}"
+		target_prefix = "log/"
+	}
+}
+`, randInt, randInt)
