@@ -309,8 +309,8 @@ func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{})
 
 	if d.HasChange("target_capacity") {
 		input := &ec2.ModifySpotFleetRequestInput{
-			SpotFleetRequestId:              aws.String(d.Id()),
-			TargetCapacity:                  aws.Int64(int64(d.Get("target_capacity").(int))),
+			SpotFleetRequestId: aws.String(d.Id()),
+			TargetCapacity:     aws.Int64(int64(d.Get("target_capacity").(int))),
 		}
 		if v, ok := d.GetOk("excess_capacity_termination_policy"); ok {
 			input.ExcessCapacityTerminationPolicy = aws.String(v.(string))
@@ -400,4 +400,3 @@ func buildAwsSpotFleetLaunchSpecifications(
 
 	return specs, nil
 }
-

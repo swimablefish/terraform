@@ -519,7 +519,7 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 					capacityUpdated := false
 
 					if int64(gsiReadCapacity) != *gsi.ProvisionedThroughput.ReadCapacityUnits ||
-					int64(gsiWriteCapacity) != *gsi.ProvisionedThroughput.WriteCapacityUnits {
+						int64(gsiWriteCapacity) != *gsi.ProvisionedThroughput.WriteCapacityUnits {
 						capacityUpdated = true
 					}
 
