@@ -194,6 +194,11 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 		},
 	}
 
+	// optional params
+	if v, ok := d.GetOk("allocation_strategy"); ok {
+		input.SpotFleetRequestConfig.AllocationStrategy = aws.String(v.(string))
+	}
+
 	log.Printf("[DEBUG] Requesting spot fleet: %s", input)
 	resp, err := conn.RequestSpotFleet(input)
 	if err != nil {
