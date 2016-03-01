@@ -180,6 +180,12 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
+	target_capacity := aws.Int64(int64(d.Get("target_capacity").(int)))
+	if *target_capacity == int64(0) {
+		log.Printf("target_capcity is 0, won't create")
+		return nil
+	}
+
 	launchSpecs, err := buildAwsSpotFleetLaunchSpecifications(d, meta)
 	if err != nil {
 		return err
@@ -190,7 +196,7 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 			IamFleetRole:         aws.String(d.Get("iam_fleet_role").(string)),
 			LaunchSpecifications: launchSpecs,
 			SpotPrice:            aws.String(d.Get("spot_price").(string)),
-			TargetCapacity:       aws.Int64(int64(d.Get("target_capacity").(int))),
+			TargetCapacity:       target_capacity,
 		},
 	}
 
@@ -313,20 +319,26 @@ func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{})
 	conn := meta.(*AWSClient).ec2conn
 
 	if d.HasChange("target_capacity") {
-		input := &ec2.ModifySpotFleetRequestInput{
-			SpotFleetRequestId: aws.String(d.Id()),
-			TargetCapacity:     aws.Int64(int64(d.Get("target_capacity").(int))),
-		}
-		if v, ok := d.GetOk("excess_capacity_termination_policy"); ok {
-			input.ExcessCapacityTerminationPolicy = aws.String(v.(string))
-		}
+		target_capacity := aws.Int64(int64(d.Get("target_capacity").(int)))
+		if *target_capacity == int64(0) {
+			log.Printf("target_capcity is 0, delete the request")
+			return resourceAwsSpotFleetRequestDelete(d, meta)
+		} else {
+			input := &ec2.ModifySpotFleetRequestInput{
+				SpotFleetRequestId: aws.String(d.Id()),
+				TargetCapacity:     target_capacity,
+			}
+			if v, ok := d.GetOk("excess_capacity_termination_policy"); ok {
+				input.ExcessCapacityTerminationPolicy = aws.String(v.(string))
+			}
 
-		resp, err := conn.ModifySpotFleetRequest(input)
-		if err != nil {
-			return err
-		}
-		if !*resp.Return {
-			return fmt.Errorf("Error modifying spot fleet (%s).", d.Id())
+			resp, err := conn.ModifySpotFleetRequest(input)
+			if err != nil {
+				return err
+			}
+			if !*resp.Return {
+				return fmt.Errorf("Error modifying spot fleet (%s).", d.Id())
+			}
 		}
 	}
 
