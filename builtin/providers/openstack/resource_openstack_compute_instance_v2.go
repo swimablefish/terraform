@@ -275,6 +275,24 @@ func resourceComputeInstanceV2() *schema.Resource {
 				},
 				Set: resourceComputeSchedulerHintsHash,
 			},
+			"personality": &schema.Schema{
+				Type:     schema.TypeSet,
+				Optional: true,
+				ForceNew: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"file": &schema.Schema{
+							Type:     schema.TypeString,
+							Required: true,
+						},
+						"content": &schema.Schema{
+							Type:     schema.TypeString,
+							Required: true,
+						},
+					},
+				},
+				Set: resourceComputeInstancePersonalityHash,
+			},
 		},
 	}
 }
@@ -334,6 +352,7 @@ func resourceComputeInstanceV2Create(d *schema.ResourceData, meta interface{}) e
 		ConfigDrive:      d.Get("config_drive").(bool),
 		AdminPass:        d.Get("admin_pass").(string),
 		UserData:         []byte(d.Get("user_data").(string)),
+		Personality:      resourceInstancePersonalityV2(d),
 	}
 
 	if keyName, ok := d.Get("key_pair").(string); ok && keyName != "" {
@@ -392,7 +411,7 @@ func resourceComputeInstanceV2Create(d *schema.ResourceData, meta interface{}) e
 
 	stateConf := &resource.StateChangeConf{
 		Pending:    []string{"BUILD"},
-		Target:     "ACTIVE",
+		Target:     []string{"ACTIVE"},
 		Refresh:    ServerV2StateRefreshFunc(computeClient, server.ID),
 		Timeout:    30 * time.Minute,
 		Delay:      10 * time.Second,
@@ -725,7 +744,7 @@ func resourceComputeInstanceV2Update(d *schema.ResourceData, meta interface{}) e
 
 		stateConf := &resource.StateChangeConf{
 			Pending:    []string{"RESIZE"},
-			Target:     "VERIFY_RESIZE",
+			Target:     []string{"VERIFY_RESIZE"},
 			Refresh:    ServerV2StateRefreshFunc(computeClient, d.Id()),
 			Timeout:    3 * time.Minute,
 			Delay:      10 * time.Second,
@@ -746,7 +765,7 @@ func resourceComputeInstanceV2Update(d *schema.ResourceData, meta interface{}) e
 
 		stateConf = &resource.StateChangeConf{
 			Pending:    []string{"VERIFY_RESIZE"},
-			Target:     "ACTIVE",
+			Target:     []string{"ACTIVE"},
 			Refresh:    ServerV2StateRefreshFunc(computeClient, d.Id()),
 			Timeout:    3 * time.Minute,
 			Delay:      10 * time.Second,
@@ -779,7 +798,7 @@ func resourceComputeInstanceV2Delete(d *schema.ResourceData, meta interface{}) e
 
 	stateConf := &resource.StateChangeConf{
 		Pending:    []string{"ACTIVE"},
-		Target:     "DELETED",
+		Target:     []string{"DELETED"},
 		Refresh:    ServerV2StateRefreshFunc(computeClient, d.Id()),
 		Timeout:    30 * time.Minute,
 		Delay:      10 * time.Second,
@@ -1139,7 +1158,7 @@ func attachVolumesToInstance(computeClient *gophercloud.ServiceClient, blockClie
 
 		stateConf := &resource.StateChangeConf{
 			Pending:    []string{"attaching", "available"},
-			Target:     "in-use",
+			Target:     []string{"in-use"},
 			Refresh:    VolumeV1StateRefreshFunc(blockClient, va["volume_id"].(string)),
 			Timeout:    30 * time.Minute,
 			Delay:      5 * time.Second,
@@ -1166,7 +1185,7 @@ func detachVolumesFromInstance(computeClient *gophercloud.ServiceClient, blockCl
 
 		stateConf := &resource.StateChangeConf{
 			Pending:    []string{"detaching", "in-use"},
-			Target:     "available",
+			Target:     []string{"available"},
 			Refresh:    VolumeV1StateRefreshFunc(blockClient, va["volume_id"].(string)),
 			Timeout:    30 * time.Minute,
 			Delay:      5 * time.Second,
@@ -1236,4 +1255,35 @@ func checkVolumeConfig(d *schema.ResourceData) error {
 	}
 
 	return nil
+}
+
+func resourceComputeInstancePersonalityHash(v interface{}) int {
+	var buf bytes.Buffer
+	m := v.(map[string]interface{})
+	buf.WriteString(fmt.Sprintf("%s-", m["file"].(string)))
+
+	return hashcode.String(buf.String())
+}
+
+func resourceInstancePersonalityV2(d *schema.ResourceData) servers.Personality {
+	var personalities servers.Personality
+
+	if v := d.Get("personality"); v != nil {
+		personalityList := v.(*schema.Set).List()
+		if len(personalityList) > 0 {
+			for _, p := range personalityList {
+				rawPersonality := p.(map[string]interface{})
+				file := servers.File{
+					Path:     rawPersonality["file"].(string),
+					Contents: []byte(rawPersonality["content"].(string)),
+				}
+
+				log.Printf("[DEBUG] OpenStack Compute Instance Personality: %+v", file)
+
+				personalities = append(personalities, &file)
+			}
+		}
+	}
+
+	return personalities
 }

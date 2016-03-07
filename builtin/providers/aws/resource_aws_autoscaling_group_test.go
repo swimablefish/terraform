@@ -550,7 +550,7 @@ resource "aws_autoscaling_group" "bar" {
   min_size = 2
   health_check_grace_period = 300
   health_check_type = "ELB"
-  min_elb_capacity = 2
+  wait_for_elb_capacity = 2
   force_delete = true
 
   launch_configuration = "${aws_launch_configuration.foobar.name}"
@@ -585,14 +585,12 @@ resource "aws_subnet" "alt" {
 }
 
 resource "aws_launch_configuration" "foobar" {
-  name = "vpc-asg-test"
   image_id = "ami-b5b3fc85"
   instance_type = "t2.micro"
 }
 
 resource "aws_autoscaling_group" "bar" {
   availability_zones = ["us-west-2a"]
-  name = "vpc-asg-test"
   max_size = 2
   min_size = 1
   health_check_grace_period = 300
@@ -631,7 +629,6 @@ resource "aws_subnet" "alt" {
 }
 
 resource "aws_launch_configuration" "foobar" {
-  name = "vpc-asg-test"
   image_id = "ami-b5b3fc85"
   instance_type = "t2.micro"
 }
@@ -641,7 +638,6 @@ resource "aws_autoscaling_group" "bar" {
     "${aws_subnet.main.id}",
     "${aws_subnet.alt.id}",
   ]
-  name = "vpc-asg-test"
   max_size = 2
   min_size = 1
   health_check_grace_period = 300

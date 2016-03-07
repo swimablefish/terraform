@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -173,6 +174,14 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 					return strings.ToUpper(value)
 				},
 				ValidateFunc: validateStreamViewType,
+			},
+
+			// if you have setup a 3rdparty dynamodb auto-scale tool like dynamic-dynamodb(https://github.com/sebdah/dynamic-dynamodb),
+			// you may want to set auto_scale_enabled to true, which will make terraform NOT to update the throughput capacity
+			"auto_scale_enabled": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
 			},
 		},
 	}
@@ -346,26 +355,6 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 		return fmt.Errorf("Range key can only be specified at creation, you cannot modify it.")
 	}
 
-	if d.HasChange("read_capacity") || d.HasChange("write_capacity") {
-		req := &dynamodb.UpdateTableInput{
-			TableName: aws.String(d.Id()),
-		}
-
-		throughput := &dynamodb.ProvisionedThroughput{
-			ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
-			WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
-		}
-		req.ProvisionedThroughput = throughput
-
-		_, err := dynamodbconn.UpdateTable(req)
-
-		if err != nil {
-			return err
-		}
-
-		waitForTableToBeActive(d.Id(), meta)
-	}
-
 	if d.HasChange("stream_enabled") || d.HasChange("stream_view_type") {
 		req := &dynamodb.UpdateTableInput{
 			TableName: aws.String(d.Id()),
@@ -496,77 +485,90 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 	}
 
 	// Update any out-of-date read / write capacity
-	if gsiObjects, ok := d.GetOk("global_secondary_index"); ok {
-		gsiSet := gsiObjects.(*schema.Set)
-		if len(gsiSet.List()) > 0 {
-			log.Printf("Updating capacity as needed!")
+	if !d.Get("auto_scale_enabled").(bool) {
+		gsiThroughputUpdates := []*dynamodb.GlobalSecondaryIndexUpdate{}
+		if gsiObjects, ok := d.GetOk("global_secondary_index"); ok {
+			gsiSet := gsiObjects.(*schema.Set)
+			if len(gsiSet.List()) > 0 {
+				log.Printf("Updating capacity as needed!")
 
-			// We can only change throughput, but we need to make sure it's actually changed
-			tableDescription, err := dynamodbconn.DescribeTable(&dynamodb.DescribeTableInput{
-				TableName: aws.String(d.Id()),
-			})
-
-			if err != nil {
-				return err
-			}
-
-			table := tableDescription.Table
-
-			updates := []*dynamodb.GlobalSecondaryIndexUpdate{}
-
-			for _, updatedgsidata := range gsiSet.List() {
-				gsidata := updatedgsidata.(map[string]interface{})
-				gsiName := gsidata["name"].(string)
-				gsiWriteCapacity := gsidata["write_capacity"].(int)
-				gsiReadCapacity := gsidata["read_capacity"].(int)
-
-				log.Printf("[DEBUG] Updating GSI %s", gsiName)
-				gsi, err := getGlobalSecondaryIndex(gsiName, table.GlobalSecondaryIndexes)
+				// We can only change throughput, but we need to make sure it's actually changed
+				tableDescription, err := dynamodbconn.DescribeTable(&dynamodb.DescribeTableInput{
+					TableName: aws.String(d.Id()),
+				})
 
 				if err != nil {
 					return err
 				}
 
-				capacityUpdated := false
+				table := tableDescription.Table
 
-				if int64(gsiReadCapacity) != *gsi.ProvisionedThroughput.ReadCapacityUnits ||
-					int64(gsiWriteCapacity) != *gsi.ProvisionedThroughput.WriteCapacityUnits {
-					capacityUpdated = true
-				}
+				for _, updatedgsidata := range gsiSet.List() {
+					gsidata := updatedgsidata.(map[string]interface{})
+					gsiName := gsidata["name"].(string)
+					gsiWriteCapacity := gsidata["write_capacity"].(int)
+					gsiReadCapacity := gsidata["read_capacity"].(int)
 
-				if capacityUpdated {
-					update := &dynamodb.GlobalSecondaryIndexUpdate{
-						Update: &dynamodb.UpdateGlobalSecondaryIndexAction{
-							IndexName: aws.String(gsidata["name"].(string)),
-							ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
-								WriteCapacityUnits: aws.Int64(int64(gsiWriteCapacity)),
-								ReadCapacityUnits:  aws.Int64(int64(gsiReadCapacity)),
-							},
-						},
-					}
-					updates = append(updates, update)
-
-				}
-
-				if len(updates) > 0 {
-
-					req := &dynamodb.UpdateTableInput{
-						TableName: aws.String(d.Id()),
-					}
-
-					req.GlobalSecondaryIndexUpdates = updates
-
-					log.Printf("[DEBUG] Updating GSI read / write capacity on %s", d.Id())
-					_, err := dynamodbconn.UpdateTable(req)
+					log.Printf("[DEBUG] Updating GSI %s", gsiName)
+					gsi, err := getGlobalSecondaryIndex(gsiName, table.GlobalSecondaryIndexes)
 
 					if err != nil {
-						log.Printf("[DEBUG] Error updating table: %s", err)
 						return err
+					}
+
+					capacityUpdated := false
+
+					if int64(gsiReadCapacity) != *gsi.ProvisionedThroughput.ReadCapacityUnits ||
+						int64(gsiWriteCapacity) != *gsi.ProvisionedThroughput.WriteCapacityUnits {
+						capacityUpdated = true
+					}
+
+					if capacityUpdated {
+						update := &dynamodb.GlobalSecondaryIndexUpdate{
+							Update: &dynamodb.UpdateGlobalSecondaryIndexAction{
+								IndexName: aws.String(gsidata["name"].(string)),
+								ProvisionedThroughput: &dynamodb.ProvisionedThroughput{
+									WriteCapacityUnits: aws.Int64(int64(gsiWriteCapacity)),
+									ReadCapacityUnits:  aws.Int64(int64(gsiReadCapacity)),
+								},
+							},
+						}
+						gsiThroughputUpdates = append(gsiThroughputUpdates, update)
 					}
 				}
 			}
 		}
 
+		// combine table and gsi throughput provision into one api call,
+		// which may help to not hitting the 4 times a day limit on decreasing provisioned throughput
+		// http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Limits.html#d0e52841
+		tableCapacityUpdated := d.HasChange("read_capacity") || d.HasChange("write_capacity")
+		gsiCapacityUpdated := len(gsiThroughputUpdates) > 0
+		if tableCapacityUpdated || gsiCapacityUpdated {
+			req := &dynamodb.UpdateTableInput{
+				TableName: aws.String(d.Id()),
+			}
+
+			if tableCapacityUpdated {
+				throughput := &dynamodb.ProvisionedThroughput{
+					ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
+					WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
+				}
+				req.ProvisionedThroughput = throughput
+			}
+
+			if gsiCapacityUpdated {
+				req.GlobalSecondaryIndexUpdates = gsiThroughputUpdates
+			}
+
+			_, err := dynamodbconn.UpdateTable(req)
+
+			if err != nil {
+				return err
+			}
+
+			waitForTableToBeActive(d.Id(), meta)
+		}
 	}
 
 	return resourceAwsDynamoDbTableRead(d, meta)
@@ -660,6 +662,37 @@ func resourceAwsDynamoDbTableDelete(d *schema.ResourceData, meta interface{}) er
 	if err != nil {
 		return err
 	}
+
+	params := &dynamodb.DescribeTableInput{
+		TableName: aws.String(d.Id()),
+	}
+
+	err = resource.Retry(10*time.Minute, func() error {
+		t, err := dynamodbconn.DescribeTable(params)
+		if err != nil {
+			if awserr, ok := err.(awserr.Error); ok && awserr.Code() == "ResourceNotFoundException" {
+				return nil
+			}
+			// Didn't recognize the error, so shouldn't retry.
+			return resource.RetryError{Err: err}
+		}
+
+		if t != nil {
+			if t.Table.TableStatus != nil && strings.ToLower(*t.Table.TableStatus) == "deleting" {
+				log.Printf("[DEBUG] AWS Dynamo DB table (%s) is still deleting", d.Id())
+				return fmt.Errorf("still deleting")
+			}
+		}
+
+		// we should be not found or deleting, so error here
+		return resource.RetryError{Err: fmt.Errorf("[ERR] Error deleting Dynamo DB table, unexpected state: %s", t)}
+	})
+
+	// check error from retry
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -800,19 +833,4 @@ func waitForTableToBeActive(tableName string, meta interface{}) error {
 
 	return nil
 
-}
-
-func validateStreamViewType(v interface{}, k string) (ws []string, errors []error) {
-	value := v.(string)
-	viewTypes := map[string]bool{
-		"KEYS_ONLY":          true,
-		"NEW_IMAGE":          true,
-		"OLD_IMAGE":          true,
-		"NEW_AND_OLD_IMAGES": true,
-	}
-
-	if !viewTypes[value] {
-		errors = append(errors, fmt.Errorf("%q be a valid DynamoDB StreamViewType", k))
-	}
-	return
 }
