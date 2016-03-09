@@ -171,6 +171,12 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 					},
 				},
 			},
+
+			"auto_scale_enabled": &schema.Schema{
+				Type:     schema.TypeBool,
+				Optional: true,
+				Default:  false,
+			},
 		},
 	}
 
@@ -318,7 +324,7 @@ func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) e
 func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
-	if d.HasChange("target_capacity") {
+	if !d.Get("auto_scale_enabled").(bool) && d.HasChange("target_capacity") {
 		target_capacity := aws.Int64(int64(d.Get("target_capacity").(int)))
 		if *target_capacity == int64(0) {
 			log.Printf("target_capcity is 0, delete the request")
