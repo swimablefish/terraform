@@ -330,45 +330,49 @@ func resourceAwsSpotFleetRequest() *schema.Resource {
 	return r
 }
 
+func setSpotFleetIdNull(d *schema.ResourceData) {
+	d.SetId("null")
+}
+
 func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{}) error {
 	conn := meta.(*AWSClient).ec2conn
 
 	target_capacity := aws.Int64(int64(d.Get("target_capacity").(int)))
 	if *target_capacity == int64(0) {
 		log.Printf("target_capcity is 0, won't create")
-		return nil
-	}
+		setSpotFleetIdNull(d)
+	} else {
+		launchSpecs, err := buildAwsSpotFleetLaunchSpecifications(d, meta, conn)
+		if err != nil {
+			return err
+		}
 
-	launchSpecs, err := buildAwsSpotFleetLaunchSpecifications(d, meta, conn)
-	if err != nil {
-		return err
-	}
+		input := &ec2.RequestSpotFleetInput{
+			SpotFleetRequestConfig: &ec2.SpotFleetRequestConfigData{
+				IamFleetRole:         aws.String(d.Get("iam_fleet_role").(string)),
+				LaunchSpecifications: launchSpecs,
+				SpotPrice:            aws.String(d.Get("spot_price").(string)),
+				TargetCapacity:       target_capacity,
+			},
+		}
 
-	input := &ec2.RequestSpotFleetInput{
-		SpotFleetRequestConfig: &ec2.SpotFleetRequestConfigData{
-			IamFleetRole:         aws.String(d.Get("iam_fleet_role").(string)),
-			LaunchSpecifications: launchSpecs,
-			SpotPrice:            aws.String(d.Get("spot_price").(string)),
-			TargetCapacity:       target_capacity,
-		},
-	}
+		// optional params
+		if v, ok := d.GetOk("allocation_strategy"); ok {
+			input.SpotFleetRequestConfig.AllocationStrategy = aws.String(v.(string))
+		}
 
-	// optional params
-	if v, ok := d.GetOk("allocation_strategy"); ok {
-		input.SpotFleetRequestConfig.AllocationStrategy = aws.String(v.(string))
-	}
+		log.Printf("[DEBUG] Requesting spot fleet: %s", input)
+		resp, err := conn.RequestSpotFleet(input)
+		if err != nil {
+			return fmt.Errorf("Error requesting spot fleet: %s", err)
+		}
 
-	log.Printf("[DEBUG] Requesting spot fleet: %s", input)
-	resp, err := conn.RequestSpotFleet(input)
-	if err != nil {
-		return fmt.Errorf("Error requesting spot fleet: %s", err)
-	}
+		d.SetId(*resp.SpotFleetRequestId)
 
-	d.SetId(*resp.SpotFleetRequestId)
+		// TODO: wait_for_fulfillment
+		if d.Get("wait_for_fulfillment").(bool) {
 
-	// TODO: wait_for_fulfillment
-	if d.Get("wait_for_fulfillment").(bool) {
-
+		}
 	}
 
 	return resourceAwsSpotFleetRequestRead(d, meta)
@@ -376,18 +380,23 @@ func resourceAwsSpotFleetRequestCreate(d *schema.ResourceData, meta interface{})
 
 // Update spot state, etc
 func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) error {
+	spotFleetRequestId := aws.String(d.Id())
+	if *spotFleetRequestId == "null" {
+		return nil
+	}
+
 	conn := meta.(*AWSClient).ec2conn
 
 	// DescribeSpotFleetRequests
 	{
 		resp, err := conn.DescribeSpotFleetRequests(&ec2.DescribeSpotFleetRequestsInput{
-			SpotFleetRequestIds: []*string{aws.String(d.Id())},
+			SpotFleetRequestIds: []*string{spotFleetRequestId},
 		})
 		if err != nil {
 			// If the spot fleet was not found, return nil so that we can show
 			// that it is gone.
 			if ec2err, ok := err.(awserr.Error); ok && ec2err.Code() == "InvalidSpotFleetRequestID.NotFound" {
-				d.SetId("")
+				setSpotFleetIdNull(d)
 				return nil
 			}
 
@@ -397,7 +406,7 @@ func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) e
 
 		// If nothing was found, then return no state
 		if len(resp.SpotFleetRequestConfigs) == 0 {
-			d.SetId("")
+			setSpotFleetIdNull(d)
 			return nil
 		}
 
@@ -405,7 +414,7 @@ func resourceAwsSpotFleetRequestRead(d *schema.ResourceData, meta interface{}) e
 
 		// if the request is cancelled, then it is gone
 		if _, ok := awsSpotFleetRequestStateCancelled[*request.SpotFleetRequestState]; ok {
-			d.SetId("")
+			setSpotFleetIdNull(d)
 			return nil
 		}
 
@@ -477,20 +486,25 @@ func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{})
 			log.Printf("target_capcity is 0, delete the request")
 			return resourceAwsSpotFleetRequestDelete(d, meta)
 		} else {
-			input := &ec2.ModifySpotFleetRequestInput{
-				SpotFleetRequestId: aws.String(d.Id()),
-				TargetCapacity:     target_capacity,
-			}
-			if v, ok := d.GetOk("excess_capacity_termination_policy"); ok {
-				input.ExcessCapacityTerminationPolicy = aws.String(v.(string))
-			}
+			spotFleetRequestId := aws.String(d.Id())
+			if *spotFleetRequestId == "null" {
+				return resourceAwsSpotFleetRequestCreate(d, meta)
+			} else {
+				input := &ec2.ModifySpotFleetRequestInput{
+					SpotFleetRequestId: spotFleetRequestId,
+					TargetCapacity:     target_capacity,
+				}
+				if v, ok := d.GetOk("excess_capacity_termination_policy"); ok {
+					input.ExcessCapacityTerminationPolicy = aws.String(v.(string))
+				}
 
-			resp, err := conn.ModifySpotFleetRequest(input)
-			if err != nil {
-				return err
-			}
-			if !*resp.Return {
-				return fmt.Errorf("Error modifying spot fleet (%s).", d.Id())
+				resp, err := conn.ModifySpotFleetRequest(input)
+				if err != nil {
+					return err
+				}
+				if !*resp.Return {
+					return fmt.Errorf("Error modifying spot fleet (%s).", d.Id())
+				}
 			}
 		}
 	}
@@ -499,17 +513,23 @@ func resourceAwsSpotFleetRequestUpdate(d *schema.ResourceData, meta interface{})
 }
 
 func resourceAwsSpotFleetRequestDelete(d *schema.ResourceData, meta interface{}) error {
+	spotFleetRequestId := aws.String(d.Id())
+	if *spotFleetRequestId == "null" {
+		return nil
+	}
+
 	conn := meta.(*AWSClient).ec2conn
 
 	_, err := conn.CancelSpotFleetRequests(&ec2.CancelSpotFleetRequestsInput{
-		SpotFleetRequestIds: []*string{aws.String(d.Id())},
+		SpotFleetRequestIds: []*string{spotFleetRequestId},
 		TerminateInstances:  aws.Bool(true),
 	})
 
 	if err != nil {
-		return fmt.Errorf("Error cancelling spot fleet (%s): %s", d.Id(), err)
+		return fmt.Errorf("Error cancelling spot fleet (%s): %s", *spotFleetRequestId, err)
 	}
 
+	setSpotFleetIdNull(d)
 	return nil
 }
 
