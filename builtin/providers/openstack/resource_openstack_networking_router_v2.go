@@ -150,7 +150,7 @@ func resourceNetworkingRouterV2Create(d *schema.ResourceData, meta interface{}) 
 		Pending:    []string{"BUILD", "PENDING_CREATE", "PENDING_UPDATE"},
 		Target:     []string{"ACTIVE"},
 		Refresh:    waitForRouterActive(networkingClient, n.ID),
-		Timeout:    2 * time.Minute,
+		Timeout:    10 * time.Minute,
 		Delay:      5 * time.Second,
 		MinTimeout: 3 * time.Second,
 	}
@@ -213,6 +213,15 @@ func resourceNetworkingRouterV2Update(d *schema.ResourceData, meta interface{}) 
 		asu := d.Get("admin_state_up").(bool)
 		updateOpts.AdminStateUp = &asu
 	}
+	if d.HasChange("external_gateway") {
+		externalGateway := d.Get("external_gateway").(string)
+		if externalGateway != "" {
+			gatewayInfo := routers.GatewayInfo{
+				NetworkID: externalGateway,
+			}
+			updateOpts.GatewayInfo = &gatewayInfo
+		}
+	}
 
 	log.Printf("[DEBUG] Updating Router %s with options: %+v", d.Id(), updateOpts)
 
@@ -235,7 +244,7 @@ func resourceNetworkingRouterV2Delete(d *schema.ResourceData, meta interface{}) 
 		Pending:    []string{"ACTIVE"},
 		Target:     []string{"DELETED"},
 		Refresh:    waitForRouterDelete(networkingClient, d.Id()),
-		Timeout:    2 * time.Minute,
+		Timeout:    10 * time.Minute,
 		Delay:      5 * time.Second,
 		MinTimeout: 3 * time.Second,
 	}

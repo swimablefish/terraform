@@ -30,6 +30,9 @@ func resourceAwsSnsTopic() *schema.Resource {
 		Read:   resourceAwsSnsTopicRead,
 		Update: resourceAwsSnsTopicUpdate,
 		Delete: resourceAwsSnsTopicDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"name": &schema.Schema{
@@ -43,9 +46,10 @@ func resourceAwsSnsTopic() *schema.Resource {
 				ForceNew: false,
 			},
 			"policy": &schema.Schema{
-				Type:     schema.TypeString,
-				Optional: true,
-				Computed: true,
+				Type:             schema.TypeString,
+				Optional:         true,
+				Computed:         true,
+				DiffSuppressFunc: suppressEquivalentAwsPolicyDiffs,
 				StateFunc: func(v interface{}) string {
 					s, ok := v.(string)
 					if !ok || s == "" {

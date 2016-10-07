@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/terraform/helper/resource"
 	"github.com/hashicorp/terraform/helper/schema"
 
@@ -34,6 +35,9 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 		Read:   resourceAwsDynamoDbTableRead,
 		Update: resourceAwsDynamoDbTableUpdate,
 		Delete: resourceAwsDynamoDbTableDelete,
+		Importer: &schema.ResourceImporter{
+			State: schema.ImportStatePassthrough,
+		},
 
 		Schema: map[string]*schema.Schema{
 			"arn": &schema.Schema{
@@ -48,10 +52,12 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 			"hash_key": &schema.Schema{
 				Type:     schema.TypeString,
 				Required: true,
+				ForceNew: true,
 			},
 			"range_key": &schema.Schema{
 				Type:     schema.TypeString,
 				Optional: true,
+				ForceNew: true,
 			},
 			"write_capacity": &schema.Schema{
 				Type:     schema.TypeInt,
@@ -86,6 +92,7 @@ func resourceAwsDynamoDbTable() *schema.Resource {
 			"local_secondary_index": &schema.Schema{
 				Type:     schema.TypeSet,
 				Optional: true,
+				ForceNew: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
 						"name": &schema.Schema{
@@ -344,19 +351,30 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 	dynamodbconn := meta.(*AWSClient).dynamodbconn
 
 	// Ensure table is active before trying to update
-	waitForTableToBeActive(d.Id(), meta)
-
-	// LSI can only be done at create-time, abort if it's been changed
-	if d.HasChange("local_secondary_index") {
-		return fmt.Errorf("Local secondary indexes can only be built at creation, you cannot update them!")
+	if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+		return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
 	}
 
-	if d.HasChange("hash_key") {
-		return fmt.Errorf("Hash key can only be specified at creation, you cannot modify it.")
-	}
+	if d.HasChange("read_capacity") || d.HasChange("write_capacity") {
+		req := &dynamodb.UpdateTableInput{
+			TableName: aws.String(d.Id()),
+		}
 
-	if d.HasChange("range_key") {
-		return fmt.Errorf("Range key can only be specified at creation, you cannot modify it.")
+		throughput := &dynamodb.ProvisionedThroughput{
+			ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
+			WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
+		}
+		req.ProvisionedThroughput = throughput
+
+		_, err := dynamodbconn.UpdateTable(req)
+
+		if err != nil {
+			return err
+		}
+
+		if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+			return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+		}
 	}
 
 	if d.HasChange("stream_enabled") || d.HasChange("stream_view_type") {
@@ -375,7 +393,9 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 			return err
 		}
 
-		waitForTableToBeActive(d.Id(), meta)
+		if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+			return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+		}
 	}
 
 	if d.HasChange("global_secondary_index") {
@@ -457,8 +477,13 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 					return err
 				}
 
-				waitForTableToBeActive(d.Id(), meta)
-				waitForGSIToBeActive(d.Id(), *gsi.IndexName, meta)
+				if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+					return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+				}
+
+				if err := waitForGSIToBeActive(d.Id(), *gsi.IndexName, meta); err != nil {
+					return errwrap.Wrapf("Error waiting for Dynamo DB GSIT to be active: {{err}}", err)
+				}
 
 			}
 		}
@@ -483,14 +508,15 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 					return err
 				}
 
-				waitForTableToBeActive(d.Id(), meta)
+				if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+					return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+				}
 			}
 		}
 	}
 
 	// Update any out-of-date read / write capacity
 	if !d.Get("auto_scale_enabled").(bool) {
-		gsiThroughputUpdates := []*dynamodb.GlobalSecondaryIndexUpdate{}
 		if gsiObjects, ok := d.GetOk("global_secondary_index"); ok {
 			gsiSet := gsiObjects.(*schema.Set)
 			if len(gsiSet.List()) > 0 {
@@ -506,6 +532,8 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 				}
 
 				table := tableDescription.Table
+
+				updates := []*dynamodb.GlobalSecondaryIndexUpdate{}
 
 				for _, updatedgsidata := range gsiSet.List() {
 					gsidata := updatedgsidata.(map[string]interface{})
@@ -537,42 +565,30 @@ func resourceAwsDynamoDbTableUpdate(d *schema.ResourceData, meta interface{}) er
 								},
 							},
 						}
-						gsiThroughputUpdates = append(gsiThroughputUpdates, update)
+						updates = append(updates, update)
+
+					}
+
+					if len(updates) > 0 {
+
+						req := &dynamodb.UpdateTableInput{
+							TableName: aws.String(d.Id()),
+						}
+
+						req.GlobalSecondaryIndexUpdates = updates
+
+						log.Printf("[DEBUG] Updating GSI read / write capacity on %s", d.Id())
+						_, err := dynamodbconn.UpdateTable(req)
+
+						if err != nil {
+							log.Printf("[DEBUG] Error updating table: %s", err)
+							return err
+						}
 					}
 				}
 			}
 		}
 
-		// combine table and gsi throughput provision into one api call,
-		// which may help to not hitting the 4 times a day limit on decreasing provisioned throughput
-		// http://docs.aws.amazon.com/amazondynamodb/latest/developerguide/Limits.html#d0e52841
-		tableCapacityUpdated := d.HasChange("read_capacity") || d.HasChange("write_capacity")
-		gsiCapacityUpdated := len(gsiThroughputUpdates) > 0
-		if tableCapacityUpdated || gsiCapacityUpdated {
-			req := &dynamodb.UpdateTableInput{
-				TableName: aws.String(d.Id()),
-			}
-
-			if tableCapacityUpdated {
-				throughput := &dynamodb.ProvisionedThroughput{
-					ReadCapacityUnits:  aws.Int64(int64(d.Get("read_capacity").(int))),
-					WriteCapacityUnits: aws.Int64(int64(d.Get("write_capacity").(int))),
-				}
-				req.ProvisionedThroughput = throughput
-			}
-
-			if gsiCapacityUpdated {
-				req.GlobalSecondaryIndexUpdates = gsiThroughputUpdates
-			}
-
-			_, err := dynamodbconn.UpdateTable(req)
-
-			if err != nil {
-				return err
-			}
-
-			waitForTableToBeActive(d.Id(), meta)
-		}
 	}
 
 	return resourceAwsDynamoDbTableRead(d, meta)
@@ -612,6 +628,44 @@ func resourceAwsDynamoDbTableRead(d *schema.ResourceData, meta interface{}) erro
 	}
 
 	d.Set("attribute", attributes)
+	d.Set("name", table.TableName)
+
+	for _, attribute := range table.KeySchema {
+		if *attribute.KeyType == "HASH" {
+			d.Set("hash_key", attribute.AttributeName)
+		}
+
+		if *attribute.KeyType == "RANGE" {
+			d.Set("range_key", attribute.AttributeName)
+		}
+	}
+
+	lsiList := make([]map[string]interface{}, 0, len(table.LocalSecondaryIndexes))
+	for _, lsiObject := range table.LocalSecondaryIndexes {
+		lsi := map[string]interface{}{
+			"name":            *lsiObject.IndexName,
+			"projection_type": *lsiObject.Projection.ProjectionType,
+		}
+
+		for _, attribute := range lsiObject.KeySchema {
+
+			if *attribute.KeyType == "RANGE" {
+				lsi["range_key"] = *attribute.AttributeName
+			}
+		}
+		nkaList := make([]string, len(lsiObject.Projection.NonKeyAttributes))
+		for _, nka := range lsiObject.Projection.NonKeyAttributes {
+			nkaList = append(nkaList, *nka)
+		}
+		lsi["non_key_attributes"] = nkaList
+
+		lsiList = append(lsiList, lsi)
+	}
+
+	err = d.Set("local_secondary_index", lsiList)
+	if err != nil {
+		return err
+	}
 
 	gsiList := make([]map[string]interface{}, 0, len(table.GlobalSecondaryIndexes))
 	for _, gsiObject := range table.GlobalSecondaryIndexes {
@@ -662,7 +716,9 @@ func resourceAwsDynamoDbTableRead(d *schema.ResourceData, meta interface{}) erro
 func resourceAwsDynamoDbTableDelete(d *schema.ResourceData, meta interface{}) error {
 	dynamodbconn := meta.(*AWSClient).dynamodbconn
 
-	waitForTableToBeActive(d.Id(), meta)
+	if err := waitForTableToBeActive(d.Id(), meta); err != nil {
+		return errwrap.Wrapf("Error waiting for Dynamo DB Table update: {{err}}", err)
+	}
 
 	log.Printf("[DEBUG] DynamoDB delete table: %s", d.Id())
 
