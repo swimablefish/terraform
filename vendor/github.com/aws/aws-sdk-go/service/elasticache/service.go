@@ -14,9 +14,9 @@ import (
 // Amazon ElastiCache is a web service that makes it easier to set up, operate,
 // and scale a distributed cache in the cloud.
 //
-// With ElastiCache, customers gain all of the benefits of a high-performance,
-// in-memory cache with far less of the administrative burden of launching and
-// managing a distributed cache. The service makes setup, scaling, and cluster
+// With ElastiCache, customers get all of the benefits of a high-performance,
+// in-memory cache with less of the administrative burden involved in launching
+// and managing a distributed cache. The service makes setup, scaling, and cluster
 // failure handling much simpler than in a self-managed cache deployment.
 //
 // In addition, through integration with Amazon CloudWatch, customers get enhanced
@@ -49,16 +49,17 @@ const ServiceName = "elasticache"
 //     svc := elasticache.New(mySession, aws.NewConfig().WithRegion("us-west-2"))
 func New(p client.ConfigProvider, cfgs ...*aws.Config) *ElastiCache {
 	c := p.ClientConfig(ServiceName, cfgs...)
-	return newClient(*c.Config, c.Handlers, c.Endpoint, c.SigningRegion)
+	return newClient(*c.Config, c.Handlers, c.Endpoint, c.SigningRegion, c.SigningName)
 }
 
 // newClient creates, initializes and returns a new service client instance.
-func newClient(cfg aws.Config, handlers request.Handlers, endpoint, signingRegion string) *ElastiCache {
+func newClient(cfg aws.Config, handlers request.Handlers, endpoint, signingRegion, signingName string) *ElastiCache {
 	svc := &ElastiCache{
 		Client: client.New(
 			cfg,
 			metadata.ClientInfo{
 				ServiceName:   ServiceName,
+				SigningName:   signingName,
 				SigningRegion: signingRegion,
 				Endpoint:      endpoint,
 				APIVersion:    "2015-02-02",
