@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/awserr"
 	"github.com/aws/aws-sdk-go/aws/request"
 	"github.com/aws/aws-sdk-go/aws/session"
+	"github.com/aws/aws-sdk-go/service/acm"
 	"github.com/aws/aws-sdk-go/service/apigateway"
 	"github.com/aws/aws-sdk-go/service/applicationautoscaling"
 	"github.com/aws/aws-sdk-go/service/autoscaling"
@@ -42,6 +45,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/kinesis"
 	"github.com/aws/aws-sdk-go/service/kms"
 	"github.com/aws/aws-sdk-go/service/lambda"
+	"github.com/aws/aws-sdk-go/service/lightsail"
 	"github.com/aws/aws-sdk-go/service/opsworks"
 	"github.com/aws/aws-sdk-go/service/rds"
 	"github.com/aws/aws-sdk-go/service/redshift"
@@ -54,6 +58,7 @@ import (
 	"github.com/aws/aws-sdk-go/service/ssm"
 	"github.com/aws/aws-sdk-go/service/sts"
 	"github.com/aws/aws-sdk-go/service/waf"
+	"github.com/davecgh/go-spew/spew"
 	"github.com/hashicorp/errwrap"
 	"github.com/hashicorp/go-cleanhttp"
 	"github.com/hashicorp/terraform/helper/logging"
@@ -107,6 +112,7 @@ type AWSClient struct {
 	elbv2conn             *elbv2.ELBV2
 	emrconn               *emr.EMR
 	esconn                *elasticsearch.ElasticsearchService
+	acmconn               *acm.ACM
 	apigateway            *apigateway.APIGateway
 	appautoscalingconn    *applicationautoscaling.ApplicationAutoScaling
 	autoscalingconn       *autoscaling.AutoScaling
@@ -118,6 +124,7 @@ type AWSClient struct {
 	stsconn               *sts.STS
 	redshiftconn          *redshift.Redshift
 	r53conn               *route53.Route53
+	partition             string
 	accountid             string
 	region                string
 	rdsconn               *rds.RDS
@@ -129,6 +136,7 @@ type AWSClient struct {
 	elasticbeanstalkconn  *elasticbeanstalk.ElasticBeanstalk
 	elastictranscoderconn *elastictranscoder.ElasticTranscoder
 	lambdaconn            *lambda.Lambda
+	lightsailconn         *lightsail.Lightsail
 	opsworksconn          *opsworks.OpsWorks
 	glacierconn           *glacier.Glacier
 	codedeployconn        *codedeploy.CodeDeploy
@@ -197,7 +205,15 @@ func (c *Config) Client() (interface{}, error) {
 	if err != nil {
 		return nil, errwrap.Wrapf("Error creating AWS session: {{err}}", err)
 	}
+
+	// Removes the SDK Version handler, so we only have the provider User-Agent
+	// Ex: "User-Agent: APN/1.0 HashiCorp/1.0 Terraform/0.7.9-dev"
+	sess.Handlers.Build.Remove(request.NamedHandler{Name: "core.SDKVersionUserAgentHandler"})
 	sess.Handlers.Build.PushFrontNamed(addTerraformVersionToUserAgent)
+
+	if extraDebug := os.Getenv("TERRAFORM_AWS_AUTHFAILURE_DEBUG"); extraDebug != "" {
+		sess.Handlers.UnmarshalError.PushFrontNamed(debugAuthFailure)
+	}
 
 	// Some services exist only in us-east-1, e.g. because they manage
 	// resources that can span across multiple regions, or because
@@ -226,8 +242,9 @@ func (c *Config) Client() (interface{}, error) {
 	}
 
 	if !c.SkipRequestingAccountId {
-		accountId, err := GetAccountId(client.iamconn, client.stsconn, cp.ProviderName)
+		partition, accountId, err := GetAccountInfo(client.iamconn, client.stsconn, cp.ProviderName)
 		if err == nil {
+			client.partition = partition
 			client.accountid = accountId
 		}
 	}
@@ -237,6 +254,7 @@ func (c *Config) Client() (interface{}, error) {
 		return nil, authErr
 	}
 
+	client.acmconn = acm.New(sess)
 	client.apigateway = apigateway.New(sess)
 	client.appautoscalingconn = applicationautoscaling.New(sess)
 	client.autoscalingconn = autoscaling.New(sess)
@@ -266,6 +284,7 @@ func (c *Config) Client() (interface{}, error) {
 	client.kinesisconn = kinesis.New(kinesisSess)
 	client.kmsconn = kms.New(sess)
 	client.lambdaconn = lambda.New(sess)
+	client.lightsailconn = lightsail.New(usEast1Sess)
 	client.opsworksconn = opsworks.New(usEast1Sess)
 	client.r53conn = route53.New(usEast1Sess)
 	client.rdsconn = rds.New(sess)
@@ -284,17 +303,20 @@ func (c *Config) Client() (interface{}, error) {
 // ValidateRegion returns an error if the configured region is not a
 // valid aws region and nil otherwise.
 func (c *Config) ValidateRegion() error {
-	var regions = [13]string{
+	var regions = []string{
 		"ap-northeast-1",
 		"ap-northeast-2",
 		"ap-south-1",
 		"ap-southeast-1",
 		"ap-southeast-2",
+		"ca-central-1",
 		"cn-north-1",
 		"eu-central-1",
 		"eu-west-1",
+		"eu-west-2",
 		"sa-east-1",
 		"us-east-1",
+		"us-east-2",
 		"us-gov-west-1",
 		"us-west-1",
 		"us-west-2",
@@ -348,7 +370,18 @@ func (c *Config) ValidateAccountId(accountId string) error {
 var addTerraformVersionToUserAgent = request.NamedHandler{
 	Name: "terraform.TerraformVersionUserAgentHandler",
 	Fn: request.MakeAddToUserAgentHandler(
-		"terraform", terraform.VersionString()),
+		"APN/1.0 HashiCorp/1.0 Terraform", terraform.VersionString()),
+}
+
+var debugAuthFailure = request.NamedHandler{
+	Name: "terraform.AuthFailureAdditionalDebugHandler",
+	Fn: func(req *request.Request) {
+		if isAWSErr(req.Error, "AuthFailure", "AWS was not able to validate the provided access credentials") {
+			log.Printf("[INFO] Additional AuthFailure Debugging Context")
+			log.Printf("[INFO] Current system UTC time: %s", time.Now().UTC())
+			log.Printf("[INFO] Request object: %s", spew.Sdump(req))
+		}
+	},
 }
 
 type awsLogger struct{}
