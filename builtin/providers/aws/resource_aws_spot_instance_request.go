@@ -211,6 +211,12 @@ func resourceAwsSpotInstanceRequestRead(d *schema.ResourceData, meta interface{}
 		if err := readInstance(d, meta); err != nil {
 			return fmt.Errorf("[ERR] Error reading Spot Instance Data: %s", err)
 		}
+		instances := make([]string, 0)
+		instances = append(instances, *request.InstanceId)
+		conn.CreateTags(&ec2.CreateTagsInput{
+			Resources: aws.StringSlice(instances),
+			Tags:      tagsFromMap(d.Get("tags").(map[string]interface{})),
+		})
 	}
 
 	d.Set("spot_request_state", request.State)
